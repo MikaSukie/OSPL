@@ -1,47 +1,32 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <meta name="theme-color" content="darkorchid" />
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Dark-Mode Study Scheduler</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dark-Mode Study Scheduler — Import Only</title>
   <style>
-    body {
-      background: #1e1e2e;
-      color: #cdd6f4;
-      font-family: Arial, sans-serif;
-      padding: 20px;
-    }
-    h1, h2, h3 { color: #89b4fa; }
-    .import { margin-bottom: 20px; }
-    input[type="file"] {
-      background: #45475a; color: #cdd6f4;
-      border: none; padding: 8px; border-radius: 6px;
-    }
-    .today, .upnext, .phase { margin-top: 20px; }
-    .task {
-      background: #313244; border: 1px solid #585b70;
-      padding: 10px; border-radius: 8px; margin-bottom: 10px;
-    }
-    .progress-container {
-      background: #222233; border-radius: 8px;
-      height: 16px; overflow: hidden; margin-top: 6px;
-    }
-    .progress-bar {
-      height: 100%; background: #94e2d5;
-      width: 0; transition: width 0.3s;
-    }
-    .not-started { color: #f9e2af; font-style: italic; }
+    body { background:#1e1e2e; color:#cdd6f4; font-family:Arial, sans-serif; padding:20px; }
+    h1,h2 { color:#89b4fa; }
+    .import { margin-bottom:20px; }
+    input[type="file"]{ background:#45475a; color:#cdd6f4; border:none; padding:8px; border-radius:6px; }
+    .today,.upnext,.phase{ margin-top:20px; }
+    .task{ background:#313244; border:1px solid #585b70; padding:10px; border-radius:8px; margin-bottom:10px; transition:transform .08s ease; }
+    .task.study{ background:linear-gradient(90deg, rgba(48,54,74,0.7), rgba(49,50,68,0.85)); }
+    .task.rest{ background:linear-gradient(90deg, rgba(43,44,58,0.7), rgba(39,35,50,0.85)); border-style:dashed; }
+    .task.active{ border:2px solid #8bd5d0; transform:scale(1.01); box-shadow:0 8px 18px rgba(0,0,0,0.45); }
+    .progress-container{ background:#222233; border-radius:8px; height:12px; overflow:hidden; margin-top:6px; }
+    .progress-bar{ height:100%; background:#94e2d5; width:0; transition:width .3s; }
+    .not-started{ color:#f9e2af; font-style:italic; }
+    .meta{ color:#a6b0d6; font-size:0.95rem; margin-top:6px; }
+    .right{ float:right; color:#cfeee9; font-weight:600; }
+    .tag{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:.75rem; margin-left:6px; background:rgba(140,150,200,0.06); color:#dbe8ff; }
   </style>
 </head>
 <body>
   <h1>📆 Study Schedule</h1>
 
   <div class="import">
-    <label>Import schedule JSON: </label></br>
+    <label>Import schedule JSON: </label><br/>
     <input type="file" id="importJson" accept=".json" />
   </div>
 
@@ -58,102 +43,115 @@
   <div class="phase" id="phaseBlock">
     <h2>📊 Current Phase Progress</h2>
     <div><strong>Phase:</strong> <span id="phaseName">—</span></div>
-    <div class="progress-container">
+    <div class="progress-container" style="height:14px; margin-top:8px;">
       <div id="phaseBar" class="progress-bar"></div>
     </div>
   </div>
 
   <script>
-    let settings = { study: 10, rest: 2 };
-    let phases = [];
+    let schedule = null;
+    let renderIntervalId = null;
 
-    document.getElementById('importJson')
-      .addEventListener('change', e => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = evt => {
-          try {
-            const json = JSON.parse(evt.target.result);
-            settings = json.settings || settings;
-            phases = json.phases || [];
-            render();
-            setInterval(render, 1000);
-          } catch {
-            alert('Invalid JSON');
+    function hhmmToDate(dateStr, timeStr) {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const [hh, mm] = timeStr.split(':').map(Number);
+      return new Date(y, m - 1, d, hh, mm, 0, 0);
+    }
+
+    function startAutoRender() {
+      if (renderIntervalId) clearInterval(renderIntervalId);
+      renderIntervalId = setInterval(render, 1000);
+    }
+
+    const importEl = document.getElementById('importJson');
+    importEl.addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = evt => {
+        try {
+          const parsed = JSON.parse(evt.target.result);
+          if (!parsed || !parsed.phases) {
+            alert('JSON must contain a "phases" array.');
+            return;
           }
-        };
-        reader.readAsText(file);
-      });
+          schedule = parsed;
+          render();
+          startAutoRender();
+        } catch (err) {
+          alert('Invalid JSON: ' + err.message);
+        }
+      };
+      r.readAsText(f);
+    });
 
     function render() {
-      const today = new Date();
-      const isoToday = today.toISOString().slice(0,10);
-      const tomorrow = new Date(today);
-      tomorrow.setDate(today.getDate()+1);
+      const now = new Date();
+      const isoToday = now.toISOString().slice(0,10);
+      const tomorrow = new Date(now); tomorrow.setDate(now.getDate()+1);
       const isoTomorrow = tomorrow.toISOString().slice(0,10);
 
-      let dayFound = false, done = 0, total = 0;
-      let currentPhaseName = 'Not started yet';
-      let tomorrowPhase = null;
-
       const todayDiv = document.getElementById('todayBlock');
-      todayDiv.innerHTML = '<h2>📌 Today\'s Tasks</h2>';
+      todayDiv.innerHTML = "<h2>📌 Today's Tasks</h2>";
 
-      phases.forEach(phase => {
-        phase.tasks.forEach(task => {
+      if (!schedule || !Array.isArray(schedule.phases) || schedule.phases.length === 0) {
+        todayDiv.innerHTML += `<p class="not-started">No data loaded. Import a JSON schedule to view tasks.</p>`;
+        document.getElementById('upNextBlock').innerHTML = '<h2>⏭️ Up Next</h2><p class="not-started">—</p>';
+        document.getElementById('phaseName').innerText = '—';
+        document.getElementById('phaseBar').style.width = '0%';
+        return;
+      }
+
+      let dayHas = false, currentPhase = 'Not started yet', tomorrowPhase = null;
+      let total = 0, done = 0;
+
+      (schedule.phases || []).forEach(phase => {
+        (phase.tasks || []).forEach(task => {
           total++;
-          if (task.date === isoToday) {
-            dayFound = true;
-            const startMs = new Date(task.date+'T'+task.start).getTime();
-            const endMs   = startMs + task.duration*60000;
-            const now     = today.getTime();
-            let pct = 0;
-            if (now >= endMs) pct = 100;
-            else if (now > startMs) pct = (now - startMs)/(endMs - startMs)*100;
+          const start = hhmmToDate(task.date, task.start);
+          const end = new Date(start.getTime() + task.duration * 60000);
+          const isToday = task.date === isoToday;
 
+          if (isToday) {
+            dayHas = true;
+            const pct = now <= start ? 0 : (now >= end ? 100 : Math.round((now - start) / (end - start) * 100));
+            const isActive = now >= start && now < end;
+            const cls = (task.type === 'rest' ? 'rest' : 'study') + (isActive ? ' active' : '');
             todayDiv.innerHTML += `
-              <div class="task">
-                <strong>${task.subject}</strong><br/>
-                Time: ${task.start} (${task.duration}m)<br/>
-                <div class="progress-container">
+              <div class="task ${cls}">
+                <strong>${task.subject}</strong>
+                <span class="right">${task.start} · ${task.duration}m</span>
+                <div class="meta"><span class="tag">${task.type === 'rest' ? 'REST' : 'STUDY'}</span></div>
+                <div class="progress-container" aria-hidden="true">
                   <div class="progress-bar" style="width:${pct}%"></div>
                 </div>
               </div>`;
           }
-          if (new Date(task.date) <= today) done++;
+
+          if (new Date(task.date) <= now) done++;
         });
 
-        if (isoToday >= phase.start && isoToday <= phase.end) {
-          currentPhaseName = phase.name;
-        }
-
-        if (isoTomorrow >= phase.start && isoTomorrow <= phase.end) {
-          tomorrowPhase = phase.name;
-        }
+        if (isoToday >= phase.start && isoToday <= phase.end) currentPhase = phase.name;
+        if (isoTomorrow >= phase.start && isoTomorrow <= phase.end) tomorrowPhase = phase.name;
       });
 
-      if (!dayFound) {
-        todayDiv.innerHTML += 
-          `<p class="not-started">No tasks scheduled for today.</p>`;
+      if (!dayHas) {
+        todayDiv.innerHTML += `<p class="not-started">No tasks scheduled for today.</p>`;
       }
 
       const upDiv = document.getElementById('upNextBlock');
-      if (tomorrowPhase === null) {
-        upDiv.innerHTML = '<h2>⏭️ Up Next</h2><p class="not-started">No upcoming phases.</p>';
-      }
-      else if (tomorrowPhase === currentPhaseName) {
-        upDiv.innerHTML = `<h2>⏭️ Up Next</h2><p>Same schedule (Phase: ${currentPhaseName})</p>`;
-      } else {
-        const nextStart = phases.find(p => p.name === tomorrowPhase).start;
-        upDiv.innerHTML = `<h2>⏭️ Up Next</h2>
-          <p>Next phase: <strong>${tomorrowPhase}</strong><br/>
-          Starts on: ${nextStart}</p>`;
+      if (!tomorrowPhase) upDiv.innerHTML = '<h2>⏭️ Up Next</h2><p class="not-started">No upcoming phases.</p>';
+      else if (tomorrowPhase === currentPhase) upDiv.innerHTML = `<h2>⏭️ Up Next</h2><p>Same schedule — <strong>${currentPhase}</strong></p>`;
+      else {
+        const nextPhase = schedule.phases.find(p => p.name === tomorrowPhase);
+        const nextStart = nextPhase ? nextPhase.start : '—';
+        upDiv.innerHTML = `<h2>⏭️ Up Next</h2><p>Next phase: <strong>${tomorrowPhase}</strong><br/>Starts on: ${nextStart}</p>`;
       }
 
-      document.getElementById('phaseName').innerText = currentPhaseName;
-      document.getElementById('phaseBar').style.width = total ? (done/total*100)+'%' : '0%';
+      document.getElementById('phaseName').innerText = currentPhase;
+      document.getElementById('phaseBar').style.width = total ? Math.round(done / total * 100) + '%' : '0%';
     }
+
   </script>
 </body>
 </html>
